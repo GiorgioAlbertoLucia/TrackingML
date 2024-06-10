@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import pickle
+from multiprocessing import Pool
 
 import torch
 
@@ -33,6 +34,8 @@ class TrackReconstruction:
 
         self.prediction_matrix = None
         self.all_tracks = None
+        self.all_tracks_idx = None
+
         self.tracks = None
         self.track_ids = None
         self.track_dataframe = None
@@ -45,7 +48,6 @@ class TrackReconstruction:
         print('Computing prediction matrix...')
 
         self.model.eval()
-        self.model.sigmoid_output = True
 
         self.prediction_matrix = []
         dataset = self.data_handler.dataset
@@ -77,13 +79,13 @@ class TrackReconstruction:
 
                 predictions[over_threshold_idx1] = (
                     predictions1[over_threshold_idx1] + predictions2) / 2.
+                del predictions2
 
             over_threshold_idx = np.where(predictions > minimum_threshold)[0]
             self.prediction_matrix.append(
                 [over_threshold_idx+ihit+1, predictions[over_threshold_idx]])
             
-            del pairs1, pairs2, predictions1, predictions2, predictions
-            self.model.sigmoid_output = False
+            del predictions1, predictions
 
         self.prediction_matrix.append(
             [np.array([], dtype='int64'), np.array([], dtype='float32')])
@@ -122,8 +124,6 @@ class TrackReconstruction:
             
         del pairs1, pairs2, insertions
             
-        
-
     def load_prediction_matrix(self, input_file: str):
         '''
             Load the prediction matrix from a file
@@ -133,7 +133,7 @@ class TrackReconstruction:
         with open(input_file, 'rb') as f:
             self.prediction_matrix = pickle.load(f)
 
-    def track_proposal(self, ihit: int, mask, threshold: float = 0.85):
+    def track_proposal(self, ihit: int, mask, threshold: float = 0.90, updating_threshold: bool = False):
         '''
             Propose a track starting from a hit. For he first proposal,
             use the probabilities to select only hits above a threshold and then select the one with highest probability.
@@ -150,16 +150,31 @@ class TrackReconstruction:
             List of hits that belong to the track
         '''
 
-        track = [ihit]
+        dataset = self.data_handler.dataset
+        HIT_IDX = self.data_handler.HIT_IDX
+        UNIQUE_MODULE_IDX = self.data_handler.UNIQUE_MODULE_IDX
+        first_hit_id = int(dataset[ihit, HIT_IDX])
+        
+        trk_idx = [ihit]        # save hit index for loops
+        track = [first_hit_id]  # save hit id
         cumulative_prob = 0
 
         while True:
 
-            current_hit = track[-1]
+            current_hit = trk_idx[-1]
 
             prob_hit = np.zeros(len(self.prediction_matrix))
             prob_hit[self.prediction_matrix[current_hit][0]
                      ] = self.prediction_matrix[current_hit][1]
+
+            if updating_threshold:
+                if (len(track) % 5 == 0) and len(track) != 5:
+                    threshold = threshold + 0.03
+
+            # automatically remove hits from the same module
+            candidate = np.where(prob_hit > threshold)[0]
+            if len(candidate) > 0:
+                mask[candidate[np.isin(dataset[candidate, UNIQUE_MODULE_IDX], dataset[trk_idx, UNIQUE_MODULE_IDX])]] = 0
 
             mask = (prob_hit > threshold) * mask
             mask[current_hit] = 0
@@ -169,10 +184,57 @@ class TrackReconstruction:
                 break
 
             next_hit = cumulative_prob.argmax()
-            if next_hit not in track:  # Check if the hit is already in the track
-                track.append(cumulative_prob.argmax())
+            next_hit_id = dataset[next_hit, HIT_IDX]
+            if next_hit_id not in track:  # Check if the hit is already in the track
+                trk_idx.append(next_hit)
+                track.append(int(next_hit_id))
 
-        return track
+        return track, trk_idx
+    
+    def process_hit(self, ihit, threshold: float = 0.85):
+        '''
+            Track reconstruction for a single hit.
+        '''
+
+        mask = np.ones(len(self.prediction_matrix))
+        trk_prop, trk_prop_idx = self.track_proposal(ihit, mask, threshold)
+
+        if len(trk_prop) > 1:
+            # for a better tracking, check if the track radically changes removing
+            # th most probable hit
+            mask[trk_prop_idx[1]] == 0
+            new_trk_prop, new_trk_prop_idx = self.track_proposal(
+                ihit, mask, threshold)
+
+            if len(new_trk_prop) > len(trk_prop):
+                # if the new track is better, iterate again
+                trk_prop = new_trk_prop
+                trk_prop_idx = new_trk_prop_idx
+                mask[trk_prop_idx[1]] == 0
+                new_trk_prop = self.track_proposal(
+                    ihit, mask, threshold)
+                
+                if len(new_trk_prop) > len(trk_prop):
+                    # if the new track is better, keep it
+                    trk_prop = new_trk_prop
+                    trk_prop_idx = new_trk_prop_idx
+
+            elif len(new_trk_prop) > 1:
+                # if the new track is worse, but still a track, try removing the second best hit
+                mask[trk_prop_idx[1]] == 1
+                mask[new_trk_prop_idx[1]] == 0
+                new_trk_prop, new_trk_prop_idx = self.track_proposal(
+                    ihit, mask, threshold)
+
+                if len(new_trk_prop) > len(trk_prop):
+                    # if the new track is better, keep it
+                    trk_prop = new_trk_prop
+                    trk_prop_idx = new_trk_prop_idx
+        
+        return trk_prop, trk_prop_idx
+
+
+
 
     def reconstruct_all_tracks(self, threshold: float = 0.85, output_file: str = None):
         '''
@@ -188,42 +250,16 @@ class TrackReconstruction:
 
         print('Reconstructing all track candidates')
         self.all_tracks = []
+        self.all_tracks_idx = []
 
-        for ihit in tqdm(range(len(self.prediction_matrix))):
-            mask = np.ones(len(self.prediction_matrix))
+        with Pool() as p:
+            all_tracks_array = p.map(self.process_hit, range(len(self.prediction_matrix)))
 
-            trk_prop = self.track_proposal(ihit, mask, threshold)
-
-            if len(trk_prop) > 1:
-                # for a better tracking, check if the track radically changes removing
-                # th most probable hit
-                mask[trk_prop[1]] == 0
-                new_trk_prop = self.track_proposal(
-                    trk_prop[-1], mask, threshold)
-
-                if len(new_trk_prop) > len(trk_prop):
-                    # if the new track is better, iterate again
-                    trk_prop = new_trk_prop
-                    mask[trk_prop[1]] == 0
-                    new_trk_prop = self.track_proposal(
-                        trk_prop[-1], mask, threshold)
-
-                elif len(new_trk_prop) > 1:
-                    # if the new track is worse, but still a track, try removing the second best hit
-                    mask[trk_prop[1]] == 1
-                    mask[new_trk_prop[1]] == 0
-                    new_trk_prop = self.track_proposal(
-                        trk_prop[-1], mask, threshold)
-
-                    if len(new_trk_prop) > len(trk_prop):
-                        # if the new track is better, keep it
-                        trk_prop = new_trk_prop
-
-            self.all_tracks.append(trk_prop)
-
+        self.all_tracks, self.all_tracks_idx = zip(*all_tracks_array)
+        
         if output_file is not None:
             with open(output_file, 'wb') as f:
-                pickle.dump(self.all_tracks, f)
+                pickle.dump(all_tracks_array, f)
             print('All tracks saved to'+tc.CYAN +
                   tc.UNDERLINE+f'{output_file}'+tc.RESET)
 
@@ -234,7 +270,9 @@ class TrackReconstruction:
         print('Loading all tracks from '+tc.CYAN +
               tc.UNDERLINE+f'{input_file}'+tc.RESET)
         with open(input_file, 'rb') as f:
-            self.all_tracks = pickle.load(f)
+            all_tracks_array = pickle.load(f)
+
+        self.all_tracks, self.all_tracks_idx = zip(*all_tracks_array)
 
     def score_tracks(self, penalty_factor: float = 8.):
         '''
@@ -250,6 +288,7 @@ class TrackReconstruction:
         for itrack in tqdm(range(len(self.all_tracks))):
 
             track = self.all_tracks[itrack]
+            track_idx = self.all_tracks_idx[itrack]
             track_length = len(track)
 
             if track_length <= 1:
@@ -259,11 +298,11 @@ class TrackReconstruction:
             shared_hits = 0
             unshared_hits = 0
 
-            for hit in track[1:]:
+            for hit_idx, hit in zip(track_idx[1:], track[1:]):
                 shared_hits += np.sum(
-                    np.isin(self.all_tracks[hit], track, assume_unique=True))
+                    np.isin(self.all_tracks[hit_idx], track, assume_unique=True))
                 unshared_hits += len(
-                    np.isin(self.all_tracks[hit], track, assume_unique=True, invert=True))
+                    np.isin(self.all_tracks[hit_idx], track, assume_unique=True, invert=True))
 
             score = (shared_hits - unshared_hits * penalty_factor -
                      track_length) / ((track_length - 1) * track_length)
@@ -284,11 +323,11 @@ class TrackReconstruction:
         # assign track_id from best to worst
         for itrack in tqdm(np.argsort(self.score)[::-1]):
 
-            track = np.array(self.all_tracks[itrack])
+            track = np.array(self.all_tracks_idx[itrack])
             # remove hits that are already assigned to a track
             track = track[np.where(self.track_ids[track] == 0)[0]]
 
-            if len(track) > 2:
+            if len(track) > 3:
                 track_id += 1
                 self.track_ids[track] = track_id
 
@@ -437,8 +476,7 @@ class TrackReconstruction:
         else:
             # create a dataframe with hit_id, particle_id, weight and a dataframe with hit_id, track_id
             dataframe = pd.DataFrame(self.data_handler.dataset, columns=[
-                                     'x', 'y', 'z', 'cl_size', 'amplitude', 'particle_id', 'weight', 'event'])
-            dataframe['hit_id'] = np.arange(len(dataframe))
+                                     'x', 'y', 'z', 'cl_size', 'amplitude', 'particle_id', 'weight', 'event', 'hit_id', 'unique_module_id'])
             dataframe['particle_id'] = self.data_handler.dataset[:, PID_IDX]
             dataframe['track_id'] = self.track_ids
 
@@ -449,10 +487,12 @@ class TrackReconstruction:
         submission = dataframe[['hit_id', 'track_id']].copy()
 
         # Calculate the score
-        results = self._analyze_tracks2(truth, submission)
-        score = results['major_weight'].sum()
 
-        print(f'\t* Score: {score:.4f}')
+        ######################################################################
+        #results = self._analyze_tracks2(truth, submission)
+        #score = results['major_weight'].sum()
+        #
+        #print(f'\t* Score: {score:.4f}')
 
         # from solution2
         #######################################################################
@@ -472,19 +512,20 @@ class TrackReconstruction:
         #print(f'\t* Score: {score:.4f}')
 
         #########################################################################
-        #print('df after event sel\n', dataframe.describe(), '')
-        #print('truth\n', truth.describe(), '')
-        #print('submission\n', submission.describe(), '')
-        #
-        #analized_tracks = self._analyze_tracks(truth, submission)
-        #purity_rec = np.divide(analized_tracks['major_nhits'], analized_tracks['nhits'])
-        #purity_maj = np.divide(analized_tracks['major_nhits'], analized_tracks['major_particle_nhits'])
-        #good_track_mask = (purity_rec > 0.5) & (purity_maj > 0.5)
+        print('df after event sel\n', dataframe.describe(), '')
+        print('truth\n', truth.describe(), '')
+        print('submission\n', submission.describe(), '')
+        
+        analized_tracks = self._analyze_tracks(truth, submission)
+        purity_rec = np.divide(analized_tracks['major_nhits'], analized_tracks['nhits'])
+        purity_maj = np.divide(analized_tracks['major_nhits'], analized_tracks['major_particle_nhits'])
+        good_track_mask = (purity_rec > 0.5) & (purity_maj > 0.5)
         #score = analized_tracks[good_track_mask]['major_weight'].sum()
-        #
-        #print(f'\t* Score: {score:.4f}')
-        #print(f'\t* Purity rec: {np.mean(purity_rec[good_track_mask]):.4f}')
-        #print(f'\t* Purity maj: {np.mean(purity_maj[good_track_mask]):.4f}')
+        score = analized_tracks['major_weight'].sum()
+        
+        print(f'\t* Score: {score:.4f}')
+        print(f'\t* Purity rec: {np.mean(purity_rec[good_track_mask]):.4f}')
+        print(f'\t* Purity maj: {np.mean(purity_maj[good_track_mask]):.4f}')
         
     def save_tracks(self, output_file: str):
         '''
