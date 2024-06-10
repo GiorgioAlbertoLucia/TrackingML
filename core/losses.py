@@ -6,13 +6,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ContrastiveLoss(nn.Module):
-    def __init__(self, margin=1.0):
-        super(ContrastiveLoss, self).__init__()
-        self.margin = margin
+class WeightedBCELoss(nn.Module):
+    '''
+        Custom loss function to penalize false positives more than false negatives
 
-    def forward(self, output1, output2, label):
-        euclidean_distance = F.pairwise_distance(output1, output2)
-        loss = torch.mean((1 - label) * torch.pow(euclidean_distance, 2) +
-                          (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
-        return loss
+    '''
+    def __init__(self, weight_fp: float = 1., weight_fn: float = 1.):
+        '''
+            Initialize the loss function with a weight for false positives
+                
+            Parameters:
+                * weight_fp (float): The weight to apply to false positives
+                (the higher the weight, the more false positives are penalized)
+                * weight_fn (float): The weight to apply to false negatives
+                (the higher the weight, the more false negatives are penalized)
+        '''
+        super(WeightedBCELoss, self).__init__()
+        self.weight_fp = weight_fp
+        self.weight_fn = weight_fn
+
+    def forward(self, y_pred, y_true):
+        loss = F.binary_cross_entropy(y_pred, y_true, reduction='none')
+        weights_fp = torch.where(y_true == 0., self.weight_fp, 1.)
+        weights_fn = torch.where(y_true == 1., self.weight_fn, 1.)
+        weighted_loss = loss * weights_fp * weights_fn
+        return weighted_loss.mean()
