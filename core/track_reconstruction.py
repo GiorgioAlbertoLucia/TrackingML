@@ -105,16 +105,6 @@ class TrackReconstruction:
                 iihits, values = zip(*inserts)
                 self.prediction_matrix[jjhit][0] = np.insert(self.prediction_matrix[jjhit][0], 0, iihits)
                 self.prediction_matrix[jjhit][1] = np.insert(self.prediction_matrix[jjhit][1], 0, values)
-
-        # complete the prediction matrix with the simmetric predictions
-        #for ihit in tqdm(range(len(self.prediction_matrix))):
-        #    iihit = len(self.prediction_matrix) - ihit - 1
-        #    for jhit in range(len(self.prediction_matrix[iihit][0])):
-        #        jjhit = self.prediction_matrix[iihit][0][jhit]
-        #        self.prediction_matrix[jjhit][0] = np.insert(
-        #            self.prediction_matrix[jjhit][0], 0, iihit)
-        #        self.prediction_matrix[jjhit][1] = np.insert(
-        #            self.prediction_matrix[jjhit][1], 0, self.prediction_matrix[iihit][1][jhit])
                 
         if output_file is not None:
             with open(output_file, 'wb') as f:
@@ -233,9 +223,6 @@ class TrackReconstruction:
         
         return trk_prop, trk_prop_idx
 
-
-
-
     def reconstruct_all_tracks(self, threshold: float = 0.85, output_file: str = None):
         '''
             Reconstruct all tracks from the hits.
@@ -256,7 +243,7 @@ class TrackReconstruction:
             all_tracks_array = p.map(self.process_hit, range(len(self.prediction_matrix)))
 
         self.all_tracks, self.all_tracks_idx = zip(*all_tracks_array)
-        
+
         if output_file is not None:
             with open(output_file, 'wb') as f:
                 pickle.dump(all_tracks_array, f)

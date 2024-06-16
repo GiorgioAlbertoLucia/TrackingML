@@ -7,10 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from hilbertcurve.hilbertcurve import HilbertCurve
-from scipy.spatial import KDTree, cKDTree
-from collections import defaultdict
-import heapq
+from scipy.spatial import KDTree
 from sklearn.decomposition import PCA
 import binpacking
 
@@ -321,7 +318,7 @@ class DetectorHashTable:
 
 class VoxelGrid:
 
-    def __init__(self, detector_file: str, grid_size, n_submodules: int = 1):
+    def __init__(self, detector_file: str, grid_size_x: int, grid_size_y: int, grid_size_z: int, n_submodules: int):
         '''
             Class to create a voxel grid for the detector.
             Used to create the input data for the convolutional neural network.
@@ -331,8 +328,8 @@ class VoxelGrid:
             For a more detailed grid, modules can be divided into smaller voxels.
         '''
 
-        self.grid_size = np.array((grid_size, grid_size, grid_size), dtype=int)
-        self.voxel_grid = np.zeros(self.grid_size, dtype=int)
+        self.grid_size = np.array((grid_size_x, grid_size_y, grid_size_z), dtype=int)
+        self.voxel_grid = np.zeros(self.grid_size, dtype=np.float32)
         self.detector_hashtable = DetectorHashTable(detector_file)
         self.module_grid_positions = None   # position of the modules in the voxel grid
 
@@ -342,7 +339,8 @@ class VoxelGrid:
         #self._generate_adaptive_voxel_grid()
         #self._generate_z_order_voxel_grid()
         #self._generate_bin_packing_voxel_grid()
-        self._generate_pca_voxel_grid()
+        #self._generate_pca_voxel_grid()
+        self._use_normalized_positions()
 
         # create a KDTree for the submodule positions (efficient search for the submodule closest to a hit)
         self.submodule_kdtree = KDTree(
@@ -410,14 +408,6 @@ class VoxelGrid:
 
         del transformed_positions, min_bounds, max_bounds, scale
 
-    # def add_hit_to_grid(self, unique_module_id: int):
-    #    '''
-    #        Adds a hit to the voxel grid (DEPRECATED)
-    #    '''
-    #
-    #    if unique_module_id in self.module_grid_positions:
-    #        self.voxel_grid[self.module_grid_positions[unique_module_id]] += 1
-
     # SUBMODULE SEGMENTATION - Creating the grid
     def _segment_module(self, module, n: int):
         '''
@@ -429,8 +419,11 @@ class VoxelGrid:
         min_width_u = module['module_minhu']
         width_v = module['module_hv']
 
-        u_positions = np.linspace(-min_width_u, min_width_u, n)
-        v_positions = np.linspace(-width_v, width_v, n)
+        submodule_width_u = 2 * min_width_u / n
+        submodule_width_v = 2 * width_v / n
+
+        u_positions = np.linspace(-min_width_u + submodule_width_u / 2, min_width_u - submodule_width_u / 2, n)
+        v_positions = np.linspace(-width_v + submodule_width_v / 2, width_v - submodule_width_v / 2, n)
 
         rotation_matrix = np.array([
             [module['rot_xu'], module['rot_xv'], module['rot_xw']],
@@ -438,8 +431,8 @@ class VoxelGrid:
             [module['rot_zu'], module['rot_zv'], module['rot_zw']]
         ])
 
-        for i, u in enumerate(u_positions):
-            for j, v in enumerate(v_positions):
+        for u in u_positions:
+            for v in v_positions:
 
                 submodule_offset_uvw = np.array([u, v, 0])
                 submodule_additional_offset_xyz = rotation_matrix.dot(
@@ -540,6 +533,15 @@ class VoxelGrid:
     #                    heapq.heappush(heap, (np.linalg.norm(new_pos), new_pos))
     #
     #    self.grid_size = np.array([max_cx + 1, max_cy + 1, max_cz + 1], dtype=int)
+
+    def _use_normalized_positions(self):
+        '''
+            Uses the normalized positions of the submodules for the voxel grid
+        '''
+
+        self.submodule_dataset['grid_x'] = self.submodule_dataset['normalized_x']
+        self.submodule_dataset['grid_y'] = self.submodule_dataset['normalized_y']
+        self.submodule_dataset['grid_z'] = self.submodule_dataset['normalized_z']
 
     def _interleave_bits(self, x, y, z):
         '''
@@ -648,12 +650,11 @@ class VoxelGrid:
             Displays the voxel grid
         '''
 
+        i, j, k = np.where(self.voxel_grid > 0)
+
         # Draw the voxel grid
-        for i in range(self.grid_size[0]):
-            for j in range(self.grid_size[1]):
-                for k in range(self.grid_size[2]):
-                    if self.voxel_grid[i, j, k] > 0:
-                        ax.scatter(i, j, k, c='r', s=self.voxel_grid[i, j, k])
+        ax.scatter(i, j, k, c='r', s=self.voxel_grid[i, j, k])
+        
 
         ax.set_xlabel('x')
         ax.set_ylabel('y')
@@ -666,6 +667,183 @@ class VoxelGrid:
         '''
 
         self.voxel_grid = np.zeros(
-            (self.grid_size, self.grid_size, self.grid_size))
+            self.grid_size, dtype=np.float32)
 
-    
+
+class VoxelGridCylindrical:
+
+    def __init__(self, detector_file: str, grid_size_r: int, grid_size_phi: int, grid_size_z: int, n_submodules: int = 1):
+        '''
+            Class to create a voxel grid for the detector in cylindrical coordinates.
+            Used to create the input data for the convolutional neural network.
+        '''
+
+        self.grid_size = np.array((grid_size_r, grid_size_phi, grid_size_z), dtype=int)
+        self.voxel_grid = np.zeros(
+            (self.grid_size[0], self.grid_size[1], self.grid_size[2]), dtype=np.float32)
+        self.detector_hashtable = DetectorHashTable(detector_file)
+        
+        self.submodule_dataset = None
+        self.detector_dataset = pd.read_csv(detector_file, sep=',')
+        self._create_submodule_df(n_submodules)
+        
+        self._evaluate_cylindrical_coordinates()
+        self._calculate_normalized_positions()
+        self._calculate_grid_positions()
+
+        self.submodule_kdtree = KDTree(
+            self.submodule_dataset[['cr', 'cphi', 'cz']].to_numpy())
+
+    def _segment_module(self, module, n: int):
+        '''
+            Segments a module into n submodules. Since the modules are centered at (0, 0, 0) in uvw coordinates,
+            the submodule position in xyz coordinates is just the submodule offset.
+        '''
+
+        submodules = []
+        min_width_u = module['module_minhu']
+        width_v = module['module_hv']
+
+        submodule_width_u = 2 * min_width_u / n
+        submodule_width_v = 2 * width_v / n
+
+        u_positions = np.linspace(-min_width_u + submodule_width_u / 2, min_width_u - submodule_width_u / 2, n)
+        v_positions = np.linspace(-width_v + submodule_width_v / 2, width_v - submodule_width_v / 2, n)
+
+        rotation_matrix = np.array([
+            [module['rot_xu'], module['rot_xv'], module['rot_xw']],
+            [module['rot_yu'], module['rot_yv'], module['rot_yw']],
+            [module['rot_zu'], module['rot_zv'], module['rot_zw']]
+        ])
+
+        for u in u_positions:
+            for v in v_positions:
+
+                submodule_offset_uvw = np.array([u, v, 0])
+                submodule_additional_offset_xyz = rotation_matrix.dot(
+                    submodule_offset_uvw) + np.array([module['cx'], module['cy'], module['cz']])
+
+                submodule = module.copy()
+                submodule['cx'] += submodule_additional_offset_xyz[0]
+                submodule['cy'] += submodule_additional_offset_xyz[1]
+
+                submodules.append(submodule)
+
+        return pd.DataFrame(submodules)
+
+    def _create_submodule_df(self, n: int) -> None:
+        '''
+            Creates a dataframe for detectr submodules and a 
+        '''
+
+        print('Creating submodule dataset...')
+
+        self.submodule_dataset = pd.DataFrame()
+
+        for _, module in self.detector_dataset.iterrows():
+            submodules = self._segment_module(module, n)
+            self.submodule_dataset = pd.concat(
+                [self.submodule_dataset, submodules], ignore_index=True)
+
+        # create a 'submodule_id' column containing the module index
+        self.submodule_dataset['submodule_id'] = self.submodule_dataset.index
+
+    def _evaluate_cylindrical_coordinates(self):
+        '''
+            Evaluates the cylindrical coordinates of the modules
+        '''
+
+        self.detector_dataset['cr'] = np.sqrt(
+            self.detector_dataset['cx']**2 + self.detector_dataset['cy']**2)
+        self.detector_dataset['cphi'] = np.arctan2(
+            self.detector_dataset['cy'], self.detector_dataset['cx'])
+        
+        if self.submodule_dataset is not None:
+            self.submodule_dataset['cr'] = np.sqrt(
+                self.submodule_dataset['cx']**2 + self.submodule_dataset['cy']**2)
+            self.submodule_dataset['cphi'] = np.arctan2(
+                self.submodule_dataset['cy'], self.submodule_dataset['cx'])
+        
+    def _calculate_bounding_box(self):
+        '''
+            Calculates the bounding box of the voxel grid
+        '''
+
+        print('Calculating bounding box...')
+
+        min_r = self.submodule_dataset['cr'].min()
+        min_phi = self.submodule_dataset['cphi'].min()
+        min_z = self.submodule_dataset['cz'].min()
+
+        max_r = self.submodule_dataset['cr'].max()
+        max_phi = self.submodule_dataset['cphi'].max()
+        max_z = self.submodule_dataset['cz'].max()
+
+        return min_r, min_phi, min_z, max_r, max_phi, max_z
+
+    def _calculate_normalized_positions(self):
+        '''
+            Calculates the normalized positions of the submodules
+        '''
+
+        print('Calculating normalized positions...')
+
+        min_r, min_phi, min_z, max_r, max_phi, max_z = self._calculate_bounding_box()
+
+        scale_r = (self.grid_size[0] - 1) / (max_r - min_r)
+        scale_phi = (self.grid_size[1] - 1) / (max_phi - min_phi)
+        scale_z = (self.grid_size[2] - 1) / (max_z - min_z)
+
+        self.submodule_dataset['normalized_r'] = (
+            (self.submodule_dataset['cr'] - min_r) * scale_r).astype(int)
+        self.submodule_dataset['normalized_phi'] = (
+            (self.submodule_dataset['cphi'] - min_phi) * scale_phi).astype(int)
+        self.submodule_dataset['normalized_z'] = (
+            (self.submodule_dataset['cz'] - min_z) * scale_z).astype(int)
+
+    def _calculate_grid_positions(self):
+        '''
+            Calculates the grid positions of the submodules
+        '''
+
+        self.submodule_dataset['grid_r'] = self.submodule_dataset['normalized_r']
+        self.submodule_dataset['grid_phi'] = self.submodule_dataset['normalized_phi']
+        self.submodule_dataset['grid_z'] = self.submodule_dataset['normalized_z']
+
+
+    def get_voxel_position(self, r: float, phi: float, z: float) -> tuple:
+        '''
+            Returns the voxel position of a given point based on the submodule the hit is closest to
+        '''
+
+        _, submodule_id = self.submodule_kdtree.query([r, phi, z])
+        submodule = self.submodule_dataset.iloc[submodule_id]
+        return int(submodule['grid_r']), int(submodule['grid_phi']), int(submodule['grid_z'])    
+
+    def add_dataset_to_grid(self, rs, phis, zs, weights=None):
+        '''
+            Adds a dataset to the voxel grid
+        '''
+
+        if weights is None:
+            weights = np.ones(len(rs))
+
+        for r, phi, z, weight in zip(rs, phis, zs, weights):
+            voxel_r, voxel_phi, voxel_z = self.get_voxel_position(r, phi, z)
+            self.voxel_grid[voxel_r, voxel_phi, voxel_z] += weight
+
+    def show(self, ax: plt.Axes):
+        '''
+            Displays the voxel grid
+        '''
+
+        # Get the indices of the voxels where the condition is true
+        i, j, k = np.where(self.voxel_grid > 0)
+
+        # Draw the voxel grid
+        ax.scatter(i, j, k, c='r', s=self.voxel_grid[i, j, k])
+
+        ax.set_xlabel('r')
+        ax.set_ylabel('phi')
+        ax.set_zlabel('z')
+        plt.show()

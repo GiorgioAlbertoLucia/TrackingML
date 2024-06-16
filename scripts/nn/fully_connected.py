@@ -25,6 +25,8 @@ from core.fcnn import FullyConnectedClassifier, ClassifierHandler
 from core.losses import WeightedBCELoss
 from core.data_handler import BinaryHandler
 
+from data_loading import data_loading as new_data_loading
+
 @timeit
 def data_loading(n_particles: int = None, test_pair: str = 'load'):
     '''
@@ -40,6 +42,7 @@ def data_loading(n_particles: int = None, test_pair: str = 'load'):
     train_events = [f'0000010{ev_idx}' for ev_idx in range(10, 20)]
     train_bh = BinaryHandler(data_dir, train_events,
                              opt='train', detector_file=detector_file)
+    #train_bh.build_negative_dataset()
     print(train_bh)
 
     # Test set
@@ -101,24 +104,29 @@ def fully_connected(train_bh: BinaryHandler, test_bh: BinaryHandler, threshold: 
     INPUT_SIZE = 12
     LEARNING_RATE = 1e-2
     WEIGHT_DECAY = 1e-4
+    MOMENTUM = 0.9
     FORCE_CPU = True
     WEIGHT_FALSE_POS = 1.
-    WEIGHT_FALSE_NEG = 1.
+    WEIGHT_FALSE_NEG = 50.
 
-    fc_model = FullyConnectedClassifier(INPUT_SIZE, sigmoid_output=False)
+    fc_model = FullyConnectedClassifier(INPUT_SIZE)
     loss_function = WeightedBCELoss(weight_fp=WEIGHT_FALSE_POS, weight_fn=WEIGHT_FALSE_NEG)
+    #optimizer = torch.optim.SGD(
     optimizer = torch.optim.Adam(
-        fc_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-    scheduler_hard_mining = lr_scheduler.StepLR(
-        optimizer, step_size=4, gamma=0.1)
+        fc_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) #, momentum=MOMENTUM)
 
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=8, gamma=0.1)
+    #scheduler_hard_mining = lr_scheduler.StepLR(
+    #    optimizer, step_size=4, gamma=0.1)
+
+    #train_bh.become_eager()
+    #test_bh.become_eager()
     ch = ClassifierHandler(fc_model, loss_function,
                            optimizer, force_cpu=FORCE_CPU)
     ch.load_data(train_bh, test_bh)
 
     # Training
-    EPOCHS = 52
+    EPOCHS = 48
     ACCUMULATION_STEPS = 2
     train_losses = []
     train_accuracies = []
@@ -140,17 +148,21 @@ def fully_connected(train_bh: BinaryHandler, test_bh: BinaryHandler, threshold: 
             print(f'\t- train loss: {train_loss:.4f}')
 
             # Evaluate
-            if (epoch) % 4 == 0:
-                train_accuracy, __, __ = ch.evaluate(
+            if (epoch) % 8 == 0:
+                train_accuracy, train_precision, train_sensitivity = ch.evaluate(
                     opt='train', threshold=threshold)
                 train_accuracies.append(train_accuracy)
-                print(f'\t- train accuracy: {train_accuracy.float():.4f}')
+                print(f'\t- train accuracy: {train_accuracy:.8f}')
+                print('\t- Train precision: ', train_precision)
+                print('\t- Train sensitivity: ', train_sensitivity)
 
                 if kwargs.get('evaluate_test_accuracy', False):
-                    test_accuracy, __, __ = ch.evaluate(
+                    test_accuracy, test_precision, test_sensitivity = ch.evaluate(
                         opt='test', threshold=threshold)
                     test_accuracies.append(test_accuracy)
-                    print(f'\t- test accuracy: {test_accuracy:.4f}')
+                    print(f'\t- test accuracy: {test_accuracy:.8f}')
+                    print('\t- Train precision: ', test_precision)
+                    print('\t- Train sensitivity: ', test_sensitivity)
 
             scheduler.step()
 
@@ -167,7 +179,7 @@ def fully_connected(train_bh: BinaryHandler, test_bh: BinaryHandler, threshold: 
 
         plt.savefig('../../plots/fc_loss.png')
 
-        epochs = [iepoch*4 for iepoch in range(EPOCHS//4)]
+        epochs = [iepoch*4 for iepoch in range(EPOCHS//8)]
         fig, axs = plt.subplots(1, 2, figsize=(12, 4))
         axs[0].plot(epochs, train_accuracies, label="Train")
         axs[0].set_title(f'Train')
@@ -183,7 +195,7 @@ def fully_connected(train_bh: BinaryHandler, test_bh: BinaryHandler, threshold: 
     else:
         print(tc.GREEN+tc.BOLD +
               '\nLoading FullyConnectedClassifier neural network...'+tc.RESET)
-        ch.model.load_state_dict(torch.load(model_path))
+        #ch.model.load_state_dict(torch.load(model_path))
 
     # Hard negative mining
     if kwargs.get('do_hard_negative_mining', False):
@@ -214,15 +226,15 @@ def fully_connected(train_bh: BinaryHandler, test_bh: BinaryHandler, threshold: 
                 train_accuracy, __, __ = ch.evaluate(
                     opt='train', threshold=threshold)
                 train_accuracies.append(train_accuracy)
-                print(f'\t- train accuracy: {train_accuracy.float():.4f}')
+                print(f'\t- train accuracy: {train_accuracy:.8f}')
 
                 if kwargs.get('evaluate_test_accuracy', False):
                     test_accuracy, __, __ = ch.evaluate(
                         opt='test', threshold=threshold)
                     test_accuracies.append(test_accuracy)
-                    print(f'\t- test accuracy: {test_accuracy:.4f}')
+                    print(f'\t- test accuracy: {test_accuracy:.8f}')
 
-            scheduler_hard_mining.step()
+            #scheduler_hard_mining.step()
 
         torch.save(ch.model.state_dict(), model_path_hard_mining)
 
@@ -256,21 +268,31 @@ def fully_connected(train_bh: BinaryHandler, test_bh: BinaryHandler, threshold: 
     ch.model.load_state_dict(torch.load(model_path))
     #ch.model.load_state_dict(torch.load(model_path_hard_mining))
 
-    # Evaluate accuracy
-    print(tc.GREEN+tc.BOLD +
-          '\nEvaluating FullyConnectedClassifier neural network...'+tc.RESET)
+    if False:
+        # Evaluate accuracy
+        print(tc.GREEN+tc.BOLD +
+              '\nEvaluating FullyConnectedClassifier neural network...'+tc.RESET)
 
-    train_acc, train_precision, train_sensitivity = ch.evaluate(
-        opt='train', threshold=threshold, save_predictions=True)
-    print('\t- Train accuracy: ', train_acc)
-    print('\t- Train precision: ', train_precision)
-    print('\t- Train sensitivity: ', train_sensitivity)
-    if kwargs.get('evaluate_test_accuracy', False):
-        test_acc, test_preccision, test_sensitivity = ch.evaluate(
-            opt='test', threshold=threshold, save_predictions=True)
-        print('\t- Test accuracy: ', test_acc)
-        print('\t- Test precision: ', test_preccision)
-        print('\t- Test sensitivity: ', test_sensitivity)
+        train_acc, train_precision, train_sensitivity, y_outs, y_preds = ch.evaluate(
+            opt='train', threshold=threshold, save_predictions=True)
+        print('\t- Train accuracy: ', train_acc)
+        print('\t- Train precision: ', train_precision)
+        print('\t- Train sensitivity: ', train_sensitivity)
+        train_bh.pair_dataset = np.hstack(
+            (train_bh.pair_dataset, y_outs, y_preds))
+        train_bh.save_pair_dataset('../../data/save/train_pred_set.npy')
+
+        del train_bh
+
+        if kwargs.get('evaluate_test_accuracy', False):
+            test_acc, test_preccision, test_sensitivity, y_outs, y_preds = ch.evaluate(
+                opt='test', threshold=threshold, save_predictions=True)
+            print('\t- Test accuracy: ', test_acc)
+            print('\t- Test precision: ', test_preccision)
+            print('\t- Test sensitivity: ', test_sensitivity)
+            test_bh.pair_dataset = np.hstack(
+                (test_bh.pair_dataset, y_outs, y_preds))
+            test_bh.save_pair_dataset('../../data/save/test_pred_set.npy')
 
     return ch
 
@@ -321,15 +343,17 @@ def track_reconstruction(train_bh: BinaryHandler, test_bh: BinaryHandler, ch: Cl
 if __name__ == '__main__':
 
     # Load data
+    #train_bh, test_bh = new_data_loading(
+    #    n_particles=100, train_pair='load', test_pair='load')
     train_bh, test_bh = data_loading(
-        n_particles=30, test_pair='build')
+        n_particles=30, test_pair='load')
 
     # Train and evaluate Logistic Regression HARD_NEGATIVE_model
-    # logistic_regression(train_bh, test_bh, evaluate_test_accuracy=True)
+    #logistic_regression(train_bh, test_bh, evaluate_test_accuracy=True)
 
     # Train and evaluate FullyConnectedClassifier neural network
-    ch = fully_connected(train_bh, test_bh, do_training=True, do_hard_negative_mining=True,
-                         build_negative_mining=False, evaluate_test_accuracy=True, threshold=0.9)
+    ch = fully_connected(train_bh, test_bh, do_training=False, do_hard_negative_mining=False,
+                         build_negative_mining=False, evaluate_test_accuracy=True, threshold=0.85)
 
     # Perform track reconstruction
-    #track_reconstruction(train_bh, test_bh, ch, reconstruct_training=False, load_reco=False)
+    track_reconstruction(train_bh, test_bh, ch, reconstruct_training=False, load_reco=False)
