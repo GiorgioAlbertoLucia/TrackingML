@@ -1,0 +1,8 @@
+numpy
+pandas
+matplotlib
+scipy
+sklearn
+binpacking
+tqdm
+torch
