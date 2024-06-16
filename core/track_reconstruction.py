@@ -475,30 +475,6 @@ class TrackReconstruction:
 
         # Calculate the score
 
-        ######################################################################
-        #results = self._analyze_tracks2(truth, submission)
-        #score = results['major_weight'].sum()
-        #
-        #print(f'\t* Score: {score:.4f}')
-
-        # from solution2
-        #######################################################################
-        #
-        #truth = truth[['hit_id', 'particle_id', 'weight']].merge(submission, how='left', on='hit_id')
-        #df = truth.groupby(['track_id', 'particle_id'])['hit_id'].count().to_frame('count_both').reset_index()
-        #truth = truth.merge(df, how='left', on=['track_id', 'particle_id'])
-        #
-        #df1 = df.groupby(['particle_id'])['count_both'].sum().to_frame('count_particle').reset_index()
-        #truth = truth.merge(df1, how='left', on='particle_id')
-        #df1 = df.groupby(['track_id'])['count_both'].sum().to_frame('count_track').reset_index()
-        #truth = truth.merge(df1, how='left', on='track_id')
-        #truth['count_both'] *= 2
-        #score = truth[(truth['count_both'] > truth['count_particle']) & (truth['count_both'] > truth['count_track'])]['weight'].sum()
-        #particles = truth[(truth['count_both'] > truth['count_particle']) & (truth['count_both'] > truth['count_track'])]['particle_id'].unique()
-        #
-        #print(f'\t* Score: {score:.4f}')
-
-        #########################################################################
         print('df after event sel\n', dataframe.describe(), '')
         print('truth\n', truth.describe(), '')
         print('submission\n', submission.describe(), '')

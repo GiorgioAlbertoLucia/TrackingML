@@ -336,7 +336,6 @@ class VoxelGrid:
         self.detector_dataset = pd.read_csv(detector_file, sep=',')
         self._create_submodule_df(n_submodules)
         self._calculate_normalized_positions()
-        #self._generate_adaptive_voxel_grid()
         #self._generate_z_order_voxel_grid()
         #self._generate_bin_packing_voxel_grid()
         #self._generate_pca_voxel_grid()
@@ -499,40 +498,6 @@ class VoxelGrid:
             (self.submodule_dataset['cy'] - min_y) * scale_y).astype(int)
         self.submodule_dataset['normalized_z'] = (
             (self.submodule_dataset['cz'] - min_z) * scale_z).astype(int)
-
-    # def _generate_adaptive_voxel_grid(self):
-    #    '''
-    #        Generates an adaptive voxel grid for the detector (avoid overlap and waste of empty space)
-    #    '''
-    #
-    #    print('Generating adaptive voxel grid...')
-    #
-    #    position_map = defaultdict(int)
-    #    heap = []
-    #    max_cx, max_cy, max_cz = 0, 0, 0
-    #
-    #    for isubmodule, submodule in tqdm(self.submodule_dataset.iterrows()):
-    #        pos = (submodule['normalized_x'], submodule['normalized_y'], submodule['normalized_z'])
-    #        if pos not in position_map:
-    #            heapq.heappush(heap, (0, pos))
-    #
-    #        while heap:
-    #            pos = heapq.heappop(heap)[1]
-    #            if pos not in position_map:
-    #                position_map[pos] = 1
-    #                self.submodule_dataset.at[isubmodule, 'normalized_x'], self.submodule_dataset.at[isubmodule, 'normalized_y'], self.submodule_dataset.at[isubmodule, 'normalized_z'] = pos
-    #                max_cx = max(max_cx, pos[0])
-    #                max_cy = max(max_cy, pos[1])
-    #                max_cz = max(max_cz, pos[2])
-    #                break
-    #
-    #            # Add surrounding positions to the heap
-    #            for dx, dy, dz in [(-1,0,0), (1,0,0), (0,-1,0), (0,1,0), (0,0,-1), (0,0,1)]:
-    #                new_pos = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
-    #                if 0 <= new_pos[0] < self.grid_size[0] and 0 <= new_pos[1] < self.grid_size[1] and 0 <= new_pos[2] < self.grid_size[2]:
-    #                    heapq.heappush(heap, (np.linalg.norm(new_pos), new_pos))
-    #
-    #    self.grid_size = np.array([max_cx + 1, max_cy + 1, max_cz + 1], dtype=int)
 
     def _use_normalized_positions(self):
         '''
