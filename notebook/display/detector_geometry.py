@@ -1,4 +1,3 @@
-%matplotlib inline
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,5 +18,6 @@ if __name__ == '__main__':
 
     for _, isubmodule in voxel_grid.submodule_dataset.iterrows():
         voxel_grid.add_hit_to_grid(isubmodule['cx'], isubmodule['cy'], isubmodule['cz'])
+    voxel_grid.show(ax)
 
     plt.savefig('voxel_grid.png')
